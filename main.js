@@ -2,11 +2,12 @@ const fs = require('fs');
 const readline = require('readline');
 const pm2 = require('pm2');
 
-const inputFilePath = 'D:/Intech/Semestre10/Big_data/StockEtablissement_utf8/StockEtablissement_utf8.csv';
+const inputFilePath = 'D:/Intech/Semestre10/Big_data/StockEtablissement_utf8/StockEtablissement_utf8_2.csv';
 const outputFolderPath = 'D:/Intech/Semestre10/Big_data/output';
 const chunkSize = 50000; // Nombre de lignes par fichier de sortie
 let fileCount = 1; // Initialise le compteur de fichiers à 1
 let workingFileCount = 1; //Commence à un comme le fichier
+let startTime = Date.now();
 
 // Fonction pour diviser le fichier CSV en fichiers plus petits
 async function splitCSV(inputFilePath, outputFolderPath, chunkSize) {
@@ -41,7 +42,6 @@ async function splitCSV(inputFilePath, outputFolderPath, chunkSize) {
         }
     }
 
-    // Fermer le dernier fichier de sortie
     outputFileStream.end();
     console.log('Splitting complete.');
 
@@ -62,11 +62,28 @@ function putToWorkOrKill(workerId) {
             });
             workingFileCount++;
         } else {
-            pm2.delete(worker, (err, res) => {
+            pm2.delete(workerId, (err, res) => {
                 if (err) {
-                    console.error(`Erreur lors de l'arrêt du worker ${worker}:`, err);
+                    console.error(`Erreur lors de l'arrêt du worker ${workerId}:`, err);
                 } else {
-                    console.log(`Worker ${worker} arrêté avec succès.`);
+                    console.log(`Worker ${workerId} arrêté avec succès.`);
+                    pm2.list((err, list) => {
+                        if (err) {
+                            console.error("Erreur lors de la récupération de la liste des processus PM2:", err);
+                        } else {
+                            if (list.length === 1) { // Si la liste ne contient qu'un élément qui est celui du main alors je delete all
+                                let endTime = Date.now();
+                                console.log(`Fin du processus, temps total pour la séparation en ${fileCount} fichiers et indexation : ` + (endTime-startTime) / 1000 + 's');
+                                pm2.delete("all", (err, res) => {
+                                    if (err) {
+                                        console.error("Erreur lors de l'arrêt de tous les processus PM2:", err);
+                                    } else {
+                                        process.exit(0);
+                                    }
+                                });
+                            }
+                        }
+                    });
                 }
             });
         }
@@ -86,7 +103,7 @@ splitCSV(inputFilePath, outputFolderPath, chunkSize)
                 script: 'worker.js',
                 name: 'Worker',
                 autorestart: false,
-                instances: "10",
+                instances: "1", // J'ai que 10 coeurs :(
                 exec_mode: 'cluster'
             }, (err, workers) => setTimeout(() => {
                 if (err) {
@@ -95,19 +112,19 @@ splitCSV(inputFilePath, outputFolderPath, chunkSize)
                 } else {
                     for (let worker of workers) {
                         putToWorkOrKill(worker.pm2_env.pm_id);
-                        pm2.launchBus((err, pm2_bus) => {
-                            if (err) {
-                                console.error(err);
-                                pm2.disconnect();
-                            }
-                            console.log("Reception d'un message ");
-                            pm2_bus.on('process:msg', (packet) => {
-                                if (packet.data.success) {
-                                    putToWorkOrKill(packet.process.pm_id);
-                                }
-                            })
-                        })
                     }
+                    pm2.launchBus((err, pm2_bus) => {
+                        if (err) {
+                            console.error(err);
+                            pm2.disconnect();
+                        }
+                        console.log("Reception d'un message ");
+                        pm2_bus.on('process:msg', (packet) => {
+                            if (packet.data.success) {
+                                putToWorkOrKill(packet.process.pm_id);
+                            }
+                        })
+                    })
                 }
             }, 1000));
 
